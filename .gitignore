@@ -1,4 +1,7 @@
 *.swp
 *.o
-fexipro
+tags
 include
+# Executables
+fexipro
+fexipro_debug

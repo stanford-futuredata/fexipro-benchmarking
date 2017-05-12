@@ -6,13 +6,14 @@
 //  Copyright © 2017 FutureData. All rights reserved.
 //
 
-#include <iostream>
-#include <fstream>
-#include <chrono>
-#include <cassert>
+#include <armadillo>
 #include <boost/program_options.hpp>
 #include <boost/tokenizer.hpp>
-#include <armadillo>
+#include <cassert>
+#include <chrono>
+#include <fstream>
+#include <iostream>
+#include <omp.h>
 
 namespace chrono = std::chrono;
 namespace opt = boost::program_options;
@@ -21,30 +22,13 @@ typedef std::chrono::high_resolution_clock Time;
 typedef std::chrono::milliseconds ms;
 typedef std::chrono::duration<float> fsec;
 
-double *parse_weights_csv(const std::string filename, const int num_rows,
-                         const int num_cols) {
-  std::cout << "Loading " << filename << "...." << std::endl;
-  std::ifstream weight_file(filename.c_str(), std::ios_base::in);
-  double *weights = new double[num_rows * num_cols];
+const double RHO = 0.7;
+const int E = 100;
 
-  std::string buffer;
-  if (weight_file) {
-    for (int i = 0; i < num_rows; i++) {
-      double *d = &weights[i * num_cols];
-      for (int j = 0; j < num_cols; j++) {
-        double f;
-        weight_file >> f;
-        if (j != num_cols - 1) {
-          std::getline(weight_file, buffer, ',');
-        }
-        d[j] = f;
-      }
-      std::getline(weight_file, buffer);
-    }
-  }
-  weight_file.close();
-  return weights;
-}
+// For debugging purposes in gdb, since we can't use overloaded operators
+double get_elem(arma::mat const &m, int i, int j) { return m(i, j); }
+double get_elem(arma::vec const &v, int i) { return v(i); }
+int get_elem(arma::uvec const &v, int i) { return v(i); }
 
 arma::mat parse_weights_csv(const std::string filename) {
   std::cout << "Loading " << filename << "...." << std::endl;
@@ -54,6 +38,73 @@ arma::mat parse_weights_csv(const std::string filename) {
     std::cout << filename << " successfully loaded" << std::endl;
   }
   return weights.t();
+}
+
+// Preprocess items matrix (P) according to Algorithm 3 in the FEXIPRO paper
+void preprocess(const int d, arma::mat &P, int &w, arma::mat &U, arma::vec &s,
+                arma::vec &p_norms, arma::vec &p_bar_h_norms,
+                arma::vec &p_double_hat_h_norms) {
+  p_norms = arma::zeros(P.n_cols);
+  p_bar_h_norms = arma::zeros(P.n_cols);
+  p_double_hat_h_norms = arma::zeros(P.n_cols);
+
+  // 1) sort item weights by decreasing length
+  for (int i = 0; i < P.n_cols; ++i) {
+    p_norms(i) = arma::norm(P.col(i), 2);
+  }
+  arma::uvec indices = arma::sort_index(p_norms, "descend");
+  P = P.cols(indices);
+
+  // 2) compute thin SVD to get U, Sigma_d, V_1
+  arma::mat V;
+  const bool success = svd_econ(U, s, V, P, "both", "dc");
+
+  // 3) Calculate w according to rho
+  const double total = arma::sum(s);
+  double sum = 0.0;
+  w = 0;
+  for (; w < s.n_elem; ++w) {
+    // std::cout << s(w) << std::endl;
+    sum += s(w);
+    if (sum / total > RHO) {
+      break;
+    }
+  }
+  // std::cout << w << std::endl;
+  // 4)
+  V = V.t();
+  const double max_P_l = P.head_rows(w).max();
+  const double max_P_h = P.tail_rows(d - w).max();
+
+  const double b = p_norms.max();
+  const double c_s_init = std::max(1.0, std::abs(P.min()));
+  arma::vec c = arma::zeros(d);
+  for (int i = 0; i < d; ++i) {
+    c(i) = c_s_init + s(i) / s(d - 1);
+  }
+
+  for (int i = 0; i < V.n_cols; ++i) {
+    const arma::vec p = P.col(i);
+    const arma::vec p_bar = V.col(i);
+    arma::vec p_hat_l = p_bar.head(w);
+    arma::vec p_hat_h = p_bar.tail(d - w);
+    p_bar_h_norms(i) = arma::norm(p_hat_h, 2);
+    p_hat_l /= max_P_l;
+    p_hat_h /= max_P_h;
+    p_hat_l *= E;
+    p_hat_h *= E;
+
+    arma::vec p_hat_floor = arma::floor(p_bar);
+    const double p_norm = p_norms(i);
+
+    arma::vec p_double_hat = arma::zeros(d + 2);
+    arma::vec p_tilde = arma::zeros(d + 1);
+    p_tilde(0) = std::sqrt(b * b - p_norm * p_norm);
+    p_tilde.tail(d) = p + c;
+    p_double_hat(0) = arma::norm(p_tilde, 2);
+    p_double_hat.tail(d + 1) = p_tilde;
+    p_double_hat_h_norms(i) = arma::norm(p_double_hat.tail(d - w), 2);
+  }
 }
 
 int main(int argc, const char *argv[]) {
@@ -66,16 +117,7 @@ int main(int argc, const char *argv[]) {
       "num-users,m", opt::value<size_t>()->required(), "Number of users")(
       "num-items,n", opt::value<size_t>()->required(), "Number of items")(
       "num-latent-factors,f", opt::value<size_t>()->required(),
-      "Nubmer of latent factors")/*(
-      "num-clusters,c", opt::value<size_t>()->required(), "Number of clusters")(
-      "sample-ratio,s", opt::value<float>()->default_value(0.1),
-      "Ratio of users to sample during clustering, between 0. and 1.")(
-      "num-iters,i", opt::value<size_t>()->default_value(3),
-      "Number of iterations to run clustering, default: 10")
-      ("num-bins,b", opt::value<size_t>()->default_value(1), "Number of bins,
-      default: 1")
-      ("num-threads,t", opt::value<size_t>()->default_value(1),
-       "Number of threads, default: 1")*/;
+      "Number of latent factors");
 
   opt::variables_map args;
   opt::store(opt::command_line_parser(argc, argv).options(description).run(),
@@ -96,53 +138,48 @@ int main(int argc, const char *argv[]) {
   const size_t num_users = args["num-users"].as<size_t>();
   const size_t num_items = args["num-items"].as<size_t>();
   const size_t num_latent_factors = args["num-latent-factors"].as<size_t>();
-  // const size_t num_clusters = args["num-clusters"].as<size_t>();
-  // const float sample_ratio = args["sample-ratio"].as<float>();
-  // const size_t num_iters = args["num-iters"].as<size_t>();
-  // const size_t num_bins = args["num-bins"].as<size_t>();
-  // const size_t num_threads = args["num-threads"].as<size_t>();
+  omp_set_num_threads(1);  // always set to one thread
 
-  // 1) Load user and item weights
-  arma::mat user_weights = parse_weights_csv(user_weights_file);
-  std::cout << "User matrix: " << arma::size(user_weights) << std::endl;
-
-  // Clustering code for SimDex
-  //
-  // auto t0 = Time::now();
-  // arma::mat means;
-  // arma::kmeans(means, user_weights.submat(0, 0, num_latent_factors - 1,
-  //                                         int(num_users * sample_ratio)),
-  //              num_clusters, arma::static_subset, num_iters, false);
-  // auto t1 = Time::now();
-  // fsec clustering_time_s = t1 - t0;
-  // ms clustering_time_ms = std::chrono::duration_cast<ms>(clustering_time_s);
-  // std::cout << "Clustering:" << std::endl;
-  // std::cout << clustering_time_s.count() << "s\n";
-  // std::cout << clustering_time_ms.count() << "ms\n";
-
+  // Load item weights
   arma::mat item_weights = parse_weights_csv(item_weights_file);
   std::cout << "Item matrix: " << arma::size(item_weights) << std::endl;
 
+  // Preprocessing return values
+  int w;
   arma::mat U;
   arma::vec s;
-  arma::mat V;
-
+  arma::vec p_norms;
+  arma::vec p_bar_h_norms;
+  arma::vec p_double_hat_h_norms;
+  // Preprocess
   auto t2 = Time::now();
-  const bool success = svd_econ(U, s, V, item_weights, "both", "dc");
+  preprocess(num_latent_factors, item_weights, w, U, s, p_norms, p_bar_h_norms,
+             p_double_hat_h_norms);
   auto t3 = Time::now();
 
-  fsec thin_svd_time_s = t3 - t2;
+  fsec preprocess_time_s = t3 - t2;
+  ms preprocess_time_ms = std::chrono::duration_cast<ms>(preprocess_time_s);
+  std::cout << "Preprocess time" << std::endl;
+  std::cout << preprocess_time_s.count() << "s\n";
+  std::cout << preprocess_time_ms.count() << "ms\n";
 
-  ms thin_svd_time_ms = std::chrono::duration_cast<ms>(thin_svd_time_s);
-
-  std::cout << "U: " << arma::size(U) << std::endl;
-  std::cout << "s: " << arma::size(s) << std::endl;
-  std::cout << "V: " << arma::size(V) << std::endl;
-  std::cout << success << std::endl;
-
-  std::cout << "Thin SVD:" << std::endl;
-  std::cout << thin_svd_time_s.count() << "s\n";
-  std::cout << thin_svd_time_ms.count() << "ms\n";
+  // Load user weights
+  arma::mat user_weights = parse_weights_csv(user_weights_file);
+  std::cout << "User matrix: " << arma::size(user_weights) << std::endl;
 
   return 0;
 }
+
+// Clustering code for SimDex
+//
+// auto t0 = Time::now();
+// arma::mat means;
+// arma::kmeans(means, user_weights.submat(0, 0, num_latent_factors - 1,
+//                                         int(num_users * sample_ratio)),
+//              num_clusters, arma::static_subset, num_iters, false);
+// auto t1 = Time::now();
+// fsec clustering_time_s = t1 - t0;
+// ms clustering_time_ms = std::chrono::duration_cast<ms>(clustering_time_s);
+// std::cout << "Clustering:" << std::endl;
+// std::cout << clustering_time_s.count() << "s\n";
+// std::cout << clustering_time_ms.count() << "ms\n";
