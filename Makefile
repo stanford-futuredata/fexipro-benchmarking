@@ -5,7 +5,7 @@ CXX := g++
 C_FLAGS := -g -O0 -std=c99
 
 ifeq ($(DEBUG), 1)
-  CXX_FLAGS := -g -O0
+  CXX_FLAGS := -g -O0 -D DEBUG
 else
   CXX_FLAGS := -O3
 endif
@@ -71,4 +71,4 @@ $(MAIN): $(CXX_OBJS) $(C_OBJS)
 .c.o:
 	$(CC) $(C_FLAGS) $(INCLUDES) -c $<  -o $@
 clean:
-	$(RM) *.o *~ $(MAIN)
+	$(RM) *.o *~ $(MAIN_DEBUG) $(MAIN_RELEASE)
