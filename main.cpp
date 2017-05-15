@@ -99,6 +99,7 @@ void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
   P_hat_floors = zeros<imat>(size(P));
   P_double_hats = zeros(d + 2, P.n_cols);
   p_norms = zeros(P.n_cols);
+  vec p_bar_norms = zeros(P.n_cols);
   p_bar_h_norms = zeros(P.n_cols);
   p_double_hat_h_norms = zeros(P.n_cols);
   p_prime_squared_norms = zeros(P.n_cols);
@@ -133,16 +134,25 @@ void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
   P_bar = V.t();
 
   // Compute b, which is needed for p_double_hat
-  // b = max(||p||) for p in P
-  const double b = p_norms.max();
+  // b = max(||p||) for p in P_bar
+  double b = -DBL_MAX;
+  for (int i = 0; i < P_bar.n_cols; ++i) {
+    const double p_bar_norm = norm(P_bar.col(i), 2);
+    if (p_bar_norm > b) {
+      b = p_bar_norm;
+    }
+    // save in p_bar_norms, so we can use it later
+    // to compute p_double_hat
+    p_bar_norms(i) = p_bar_norm;
+  }
   // Compute c, which is needed for p_double_hat
   // c = (max(1, |p_min|) + sigma_1/sigma_d, ..., max(1, |p_min|) +
   // sigma_d/sigma_d)
-  // |p_min| = absolute value of minimum value in P
-  const double c_s_init = std::max(1.0, std::abs(P.min()));
+  // |p_min| = absolute value of minimum value in P_bar
+  const double c_init = std::max(1.0, std::abs(P_bar.min()));
   c = zeros(d);
   for (int i = 0; i < d; ++i) {
-    c(i) = c_s_init + sigma(i) / sigma(d - 1);
+    c(i) = c_init + sigma(i) / sigma(d - 1);
   }
 
   max_P_bar_l = abs(P_bar.head_rows(w)).max();
@@ -168,17 +178,14 @@ void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
         conv_to<ivec>::from(floor(join_vert(p_hat_l, p_hat_h)));
     P_hat_floors.col(i) = p_hat_floor;
 
-    // 2. Compute p_double_hat and thresh_prime_offline (note: we use P--not
-    // P_bar--for these calculations)
-    vec p = P.col(i);
-
+    // 2. Compute p_double_hat and thresh_prime_offline
     // p_double_hat = (||p_prime||^2, p_prime_1, ..., p_prime_d+1)
     vec p_double_hat = zeros(d + 2);
     // p_prime = (sqrt(b^2 - ||p||^2), p_1 + c_1, ..., p_d + c_d)
     vec p_prime = zeros(d + 1);
-    const double p_norm = p_norms(i);
-    p_prime(0) = std::sqrt(b * b - p_norm * p_norm);
-    p_prime.tail(d) = p + c;
+    const double p_bar_norm = p_bar_norms(i);
+    p_prime(0) = std::sqrt(b * b - p_bar_norm * p_bar_norm);
+    p_prime.tail(d) = p_bar + c;
     double p_prime_squared_norm = norm(p_prime, 2);
     p_prime_squared_norm *= p_prime_squared_norm;
     p_prime_squared_norms(i) = p_prime_squared_norm;
@@ -200,7 +207,7 @@ void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
     // thresh_prime_offline = 2*sum(c_1*p_1 + c_1^2, ..., c_d*p_d + c_d^2) -
     // ||p_prime||^2
     thresh_prime_offline(i) =
-        2 * (dot(c, p) + dot(c, c)) - p_prime_squared_norm;
+        2 * (dot(c, p_bar) + dot(c, c)) - p_prime_squared_norm;
   }
 }
 
@@ -212,7 +219,7 @@ double coordinate_scan(const vec &p, const vec &q, const vec &p_bar,
                        const vec &p_double_hat, const vec &q_double_hat,
                        const uint32_t w, const uint32_t d, const double thresh,
                        const double thresh_prime,
-                       const double p_prime_squared_norm, const double q_norm,
+                       const double p_prime_squared_norm, const double q_norm, const double q_bar_norm,
                        const double p_bar_h_norm, const double q_bar_h_norm,
                        const double p_double_hat_h_norm,
                        const double q_double_hat_h_norm,
@@ -258,15 +265,12 @@ double coordinate_scan(const vec &p, const vec &q, const vec &p_bar,
 #endif
     return -DBL_MAX;
   }
-  const vec p_l = p.head(w);
-  const vec q_l = q.head(w);
   const vec c_l = c.head(w);
-
   // dot(q_double_hat_l, p_double_hat_l) = 2*dot(q_l, p_l)/||q|| +
   // 2*\sum_{s=1}^w (c_s*q_s/||q|| + c_s*p_s + c_s^2) - ||p_prime||^2
   const double dot_q_p_double_hat_l =
-      2 * dot(p_l, q_l) / q_norm +
-      2 * (dot(c_l, q_l) / q_norm + dot(c_l, p_l) + dot(c_l, c_l)) -
+      2 * v / q_bar_norm +
+      2 * (dot(c_l, q_bar_l) / q_bar_norm + dot(c_l, p_bar_l) + dot(c_l, c_l)) -
       p_prime_squared_norm;
   const double ub_2 = p_double_hat_h_norm * q_double_hat_h_norm;
 
@@ -340,7 +344,7 @@ uvec retrieve_top_K(const uint32_t d, const uint32_t w, const uint32_t K,
   q_double_hat(0) = -1;
   // q_prime = (0, q_1/||q|| + c_1, q_2/||q|| + c_2, ..., q_d/||q|| + c_d)
   vec q_prime = zeros(d + 1);
-  q_prime.tail(d) = q;
+  q_prime.tail(d) = q_bar;
   q_prime = normalise(q_prime, 2);
   q_prime.tail(d) += c;
   q_double_hat.tail(d + 1) = 2 * q_prime;
@@ -356,11 +360,12 @@ uvec retrieve_top_K(const uint32_t d, const uint32_t w, const uint32_t K,
 
   // 3) Compute ||q||, ||q_bar_h||, and ||q_double_hat_h||
   const double q_norm = norm(q, 2);
+  const double q_bar_norm = norm(q_bar, 2);
   const double q_bar_h_norm = norm(q_bar.tail(d - w), 2);
   const double q_double_hat_h_norm = norm(q_double_hat.tail(d - w), 2);
 
   // Compute 2*dot(c, q)/||q||
-  const double thresh_prime_online = 2 * dot(c, q) / q_norm;
+  const double thresh_prime_online = 2 * dot(c, q_bar) / q_bar_norm;
 
   // 4) Search for top K
   uint32_t item_ind = 0;
@@ -371,12 +376,12 @@ uvec retrieve_top_K(const uint32_t d, const uint32_t w, const uint32_t K,
     const vec p_double_hat = P_double_hats.col(item_ind);
     const double p_prime_squared_norm = p_prime_squared_norms(item_ind);
     const double thresh_prime_offline_single = thresh_prime_offline(item_ind);
-    check_double_hat_equivalency(q_double_hat, p_double_hat, q, p, c, q_norm,
+    check_double_hat_equivalency(q_double_hat, p_double_hat, q_bar, p_bar, c, q_bar_norm,
                                  p_prime_squared_norm);
     check_double_hat_equivalency(q_double_hat.head(w + 2),
-                                 p_double_hat.head(w + 2), q.head(w), p.head(w),
-                                 c.head(w), q_norm, p_prime_squared_norm);
-    check_double_hat_equivalency(q_double_hat, p_double_hat, q, p, q_norm,
+                                 p_double_hat.head(w + 2), q_bar.head(w), p_bar.head(w),
+                                 c.head(w), q_bar_norm, p_prime_squared_norm);
+    check_double_hat_equivalency(q_double_hat, p_double_hat, q_bar, p_bar, q_bar_norm,
                                  thresh_prime_online,
                                  thresh_prime_offline_single);
 #endif
@@ -384,7 +389,7 @@ uvec retrieve_top_K(const uint32_t d, const uint32_t w, const uint32_t K,
     queue.push(std::make_pair(score, item_ind));
   }
   thresh = queue.top().first;
-  thresh_prime = 2 * thresh / q_norm + thresh_prime_online +
+  thresh_prime = 2 * thresh / q_bar_norm + thresh_prime_online +
                  thresh_prime_offline(queue.top().second);
 
   for (item_ind = K; item_ind < P_bar.n_cols; ++item_ind) {
@@ -394,9 +399,12 @@ uvec retrieve_top_K(const uint32_t d, const uint32_t w, const uint32_t K,
     const vec p_double_hat = P_double_hats.col(item_ind);
     const double p_prime_squared_norm = p_prime_squared_norms(item_ind);
     const double thresh_prime_offline_single = thresh_prime_offline(item_ind);
-    check_double_hat_equivalency(q_double_hat, p_double_hat, q, p, c, q_norm,
+    check_double_hat_equivalency(q_double_hat, p_double_hat, q_bar, p_bar, c, q_bar_norm,
                                  p_prime_squared_norm);
-    check_double_hat_equivalency(q_double_hat, p_double_hat, q, p, q_norm,
+    check_double_hat_equivalency(q_double_hat.head(w + 2),
+                                 p_double_hat.head(w + 2), q_bar.head(w), p_bar.head(w),
+                                 c.head(w), q_bar_norm, p_prime_squared_norm);
+    check_double_hat_equivalency(q_double_hat, p_double_hat, q_bar, p_bar, q_bar_norm,
                                  thresh_prime_online,
                                  thresh_prime_offline_single);
 #endif
@@ -407,14 +415,14 @@ uvec retrieve_top_K(const uint32_t d, const uint32_t w, const uint32_t K,
         p, q, p_bar, q_bar, p_hat_l_floors.col(item_ind), q_hat_l_floor,
         p_hat_h_floors.col(item_ind), q_hat_h_floor, c,
         P_double_hats.col(item_ind), q_double_hat, w, d, thresh, thresh_prime,
-        p_prime_squared_norms(item_ind), q_norm, p_bar_h_norms(item_ind),
+        p_prime_squared_norms(item_ind), q_norm, q_bar_norm, p_bar_h_norms(item_ind),
         q_bar_h_norm, p_double_hat_h_norms(item_ind), q_double_hat_h_norm,
         max_P_bar_l, max_q_bar_l, max_P_bar_h, max_q_bar_h);
     if (v > thresh) {
       queue.pop();
       queue.push(std::make_pair(v, item_ind));
       thresh = queue.top().first;
-      thresh_prime = 2 * thresh / q_norm + thresh_prime_online +
+      thresh_prime = 2 * thresh / q_bar_norm + thresh_prime_online +
                      thresh_prime_offline(queue.top().second);
     }
   }
