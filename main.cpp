@@ -7,8 +7,8 @@
 //
 
 #include <armadillo>
+#include <boost/format.hpp>
 #include <boost/program_options.hpp>
-#include <boost/tokenizer.hpp>
 #ifdef DEBUG
 #include <cassert>
 #endif
@@ -108,7 +108,7 @@ void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
 
   // 1) sort item weights by decreasing length
   for (int i = 0; i < P.n_cols; ++i) {
-    p_norms(i) = norm(P.col(i), 2);
+    p_norms(i) = norm(P.unsafe_col(i), 2);
   }
   // sort item norms from highest to lowest, and keep
   // track of the original item ids
@@ -138,7 +138,7 @@ void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
   // b = max(||p||) for p in P_bar
   double b = -DBL_MAX;
   for (int i = 0; i < P_bar.n_cols; ++i) {
-    const double p_bar_norm = norm(P_bar.col(i), 2);
+    const double p_bar_norm = norm(P_bar.unsafe_col(i), 2);
     if (p_bar_norm > b) {
       b = p_bar_norm;
     }
@@ -162,7 +162,7 @@ void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
   // should we use P or P_bar? P_bar, since P_bar = V^t, and we want to take
   // advantage of the SVD operation before we do integer pruning
   for (int i = 0; i < P_bar.n_cols; ++i) {
-    const vec p_bar = P_bar.col(i);
+    const vec p_bar = P_bar.unsafe_col(i);
 
     //  1. Compute p_hat_l, p_hat_h, and p_hat_floor **for p_bar**
     // p_hat_l = (e*p_1/max(P_l), e*p_2/max(P_l), ..., e*p_w/max(P_l))
@@ -178,7 +178,7 @@ void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
     // p_hat_floor = floor of concat(p_hat_l, p_hat_h)
     const ivec p_hat_floor =
         conv_to<ivec>::from(floor(join_vert(p_hat_l, p_hat_h)));
-    P_hat_floors.col(i) = p_hat_floor;
+    P_hat_floors.unsafe_col(i) = p_hat_floor;
 
     // 2. Compute p_double_hat and thresh_prime_offline
     // p_double_hat = (||p_prime||^2, p_prime_1, ..., p_prime_d+1)
@@ -193,7 +193,7 @@ void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
     p_prime_squared_norms(i) = p_prime_squared_norm;
     p_double_hat(0) = p_prime_squared_norm;
     p_double_hat.tail(d + 1) = p_prime;
-    P_double_hats.col(i) = p_double_hat;
+    P_double_hats.unsafe_col(i) = p_double_hat;
 #ifdef DEBUG
     // p_double_hat should always have nonnegative values
     for (int i = 0; i < d + 2; ++i) {
@@ -274,9 +274,9 @@ double coordinate_scan(const vec &p, const vec &q, const vec &p_bar,
   }
   // dot(q_double_hat_l, p_double_hat_l) = 2*dot(q_l, p_l)/||q|| +
   // 2*\sum_{s=1}^w (c_s*q_s/||q|| + c_s*p_s + c_s^2) - ||p_prime||^2
-  const double dot_q_p_double_hat_l =
-      2 * v / q_bar_norm +
-      2 * dot(c_l, q_bar_l) / q_bar_norm + thresh_prime_offline_l_single;
+  const double dot_q_p_double_hat_l = 2 * v / q_bar_norm +
+                                      2 * dot(c_l, q_bar_l) / q_bar_norm +
+                                      thresh_prime_offline_l_single;
   const double ub_2 = p_double_hat_h_norm * q_double_hat_h_norm;
 #ifdef DEBUG
   const vec p_double_hat_l = p_double_hat.head(w + 2);
@@ -304,19 +304,17 @@ double coordinate_scan(const vec &p, const vec &q, const vec &p_bar,
 // retrieve top K items for user q, based on Algorithm 4 in FEXIPRO paper
 uvec retrieve_top_K(const uint32_t d, const uint32_t w, const uint32_t K,
                     const vec &q, const mat &P, const mat &P_bar, const mat &U,
-                    const imat &P_hat_floors, const mat &P_double_hats,
-                    const uvec &item_ids, const vec &sigma, const vec &c,
-                    const vec &c_l, const vec &p_norms,
-                    const vec &p_bar_h_norms, const vec &p_double_hat_h_norms,
+                    const imat &p_hat_l_floors, const imat &p_hat_h_floors,
+                    const mat &P_double_hats, const uvec &item_ids,
+                    const vec &sigma, const vec &c, const vec &c_l,
+                    const vec &p_norms, const vec &p_bar_h_norms,
+                    const vec &p_double_hat_h_norms,
                     const vec &p_prime_squared_norms,
                     const vec &thresh_prime_offline,
                     const vec &thresh_prime_offline_l, const double max_P_bar_l,
                     const double max_P_bar_h) {
 
   uvec top_K_items = zeros<uvec>(K);
-
-  const imat p_hat_l_floors = P_hat_floors.head_rows(w);
-  const imat p_hat_h_floors = P_hat_floors.tail_rows(d - w);
 
   std::priority_queue<std::pair<double, uint32_t>,
                       std::vector<std::pair<double, uint32_t> >,
@@ -375,10 +373,10 @@ uvec retrieve_top_K(const uint32_t d, const uint32_t w, const uint32_t K,
   // 4) Search for top K
   uint32_t item_ind = 0;
   for (; item_ind < K; ++item_ind) {
-    const vec p_bar = P_bar.col(item_ind);
+    const vec p_bar = P_bar.unsafe_col(item_ind);
 #ifdef DEBUG
-    const vec p = P.col(item_ind);
-    const vec p_double_hat = P_double_hats.col(item_ind);
+    const vec p = P.unsafe_col(item_ind);
+    const vec p_double_hat = P_double_hats.unsafe_col(item_ind);
     const double p_prime_squared_norm = p_prime_squared_norms(item_ind);
     const double thresh_prime_offline_single = thresh_prime_offline(item_ind);
     check_double_hat_equivalency(q_double_hat, p_double_hat, q_bar, p_bar, c,
@@ -398,10 +396,10 @@ uvec retrieve_top_K(const uint32_t d, const uint32_t w, const uint32_t K,
                  thresh_prime_offline(queue.top().second);
 
   for (item_ind = K; item_ind < P_bar.n_cols; ++item_ind) {
-    const vec p_bar = P_bar.col(item_ind);
-    const vec p = P.col(item_ind);
+    const vec p_bar = P_bar.unsafe_col(item_ind);
+    const vec p = P.unsafe_col(item_ind);
 #ifdef DEBUG
-    const vec p_double_hat = P_double_hats.col(item_ind);
+    const vec p_double_hat = P_double_hats.unsafe_col(item_ind);
     const double p_prime_squared_norm = p_prime_squared_norms(item_ind);
     const double thresh_prime_offline_single = thresh_prime_offline(item_ind);
     check_double_hat_equivalency(q_double_hat, p_double_hat, q_bar, p_bar, c,
@@ -417,10 +415,10 @@ uvec retrieve_top_K(const uint32_t d, const uint32_t w, const uint32_t K,
       break;
     }
     const double v = coordinate_scan(
-        p, q, p_bar, q_bar, p_hat_l_floors.col(item_ind), q_hat_l_floor,
-        p_hat_h_floors.col(item_ind), q_hat_h_floor, c, c_l,
-        P_double_hats.col(item_ind), q_double_hat, w, d, thresh, thresh_prime,
-        p_prime_squared_norms(item_ind), q_norm, q_bar_norm,
+        p, q, p_bar, q_bar, p_hat_l_floors.unsafe_col(item_ind), q_hat_l_floor,
+        p_hat_h_floors.unsafe_col(item_ind), q_hat_h_floor, c, c_l,
+        P_double_hats.unsafe_col(item_ind), q_double_hat, w, d, thresh,
+        thresh_prime, p_prime_squared_norms(item_ind), q_norm, q_bar_norm,
         p_bar_h_norms(item_ind), q_bar_h_norm, p_double_hat_h_norms(item_ind),
         q_double_hat_h_norm, thresh_prime_offline_l(item_ind), max_P_bar_l,
         max_q_bar_l, max_P_bar_h, max_q_bar_h);
@@ -454,7 +452,9 @@ int main(int argc, const char *argv[]) {
       "num-users,m", opt::value<uint32_t>()->required(), "Number of users")(
       "num-items,n", opt::value<uint32_t>()->required(), "Number of items")(
       "num-latent-factors,f", opt::value<uint32_t>()->required(),
-      "Number of latent factors");
+      "Number of latent factors")("base-name",
+                                  opt::value<std::string>()->required(),
+                                  "Base name for output file");
 
   opt::variables_map args;
   opt::store(opt::command_line_parser(argc, argv).options(description).run(),
@@ -476,6 +476,8 @@ int main(int argc, const char *argv[]) {
   const uint32_t num_items = args["num-items"].as<uint32_t>();
   const uint32_t num_latent_factors = args["num-latent-factors"].as<uint32_t>();
   omp_set_num_threads(1);  // always set to one thread
+
+  const std::string base_name = args["base-name"].as<std::string>();
 
   // Load item weights
   mat item_weights = parse_weights_csv(item_weights_file);
@@ -518,12 +520,14 @@ int main(int argc, const char *argv[]) {
   std::cout << "User matrix: " << size(user_weights) << std::endl;
   start = Time::now();
   for (int i = 0; i < user_weights.n_cols; ++i) {
-    const vec q = user_weights.col(i);
+    const vec q = user_weights.unsafe_col(i);
     const uvec top_K_items = retrieve_top_K(
-        num_latent_factors, w, K, q, item_weights, P_bar, U, P_hat_floors,
-        P_double_hats, item_ids, sigma, c, c.head(w), p_norms, p_bar_h_norms,
-        p_double_hat_h_norms, p_prime_squared_norms, thresh_prime_offline,
-        thresh_prime_offline_l, max_P_bar_l, max_P_bar_h);
+        num_latent_factors, w, K, q, item_weights, P_bar, U,
+        P_hat_floors.head_rows(w),
+        P_hat_floors.tail_rows(num_latent_factors - w), P_double_hats, item_ids,
+        sigma, c, c.head(w), p_norms, p_bar_h_norms, p_double_hat_h_norms,
+        p_prime_squared_norms, thresh_prime_offline, thresh_prime_offline_l,
+        max_P_bar_l, max_P_bar_h);
 #ifdef DEBUG
     std::cout << top_K_items(0) << std::endl;
 #endif
@@ -537,19 +541,24 @@ int main(int argc, const char *argv[]) {
   std::cout << comp_time_s.count() << "s\n";
   std::cout << comp_time_ms.count() << "ms\n";
 
+  std::ofstream timing_stats_file;
+  const unsigned int curr_time =
+      std::chrono::system_clock::now().time_since_epoch().count();
+  const std::string timing_stats_fname =
+      base_name + "_timing_" + std::to_string(curr_time) + ".csv";
+  timing_stats_file.open(timing_stats_fname, std::ios_base::app);
+  timing_stats_file << "model,K,num_latent_factors,avg_full_dot_products,"
+                       "preproc_time,comp_time"
+                    << std::endl;
+  const std::string timing_stats =
+      (boost::format("%1%,%2%,%3%,%4%,%5%,%6%") % base_name % K %
+       num_latent_factors % avg_full_dot_products % preprocess_time_s.count() %
+       comp_time_s.count())
+          .str();
+  timing_stats_file << timing_stats << std::endl;
+  timing_stats_file.close();
   return 0;
 }
-
-//     std::cout << "sigma: " << size(diagmat(sigma)) <<  std::endl;
-//     std::cout << "U: " << size(U) <<  std::endl;
-//     U.print();
-//     std::cout << "q: " << size(q) <<  std::endl;
-//     for (int j = 0; j < P_bar.n_cols; ++j) {
-//       const vec p = item_weights.col(j);
-//       const vec p_bar = P_bar.col(j);
-//       std::cout << dot(q, p) << std::endl;
-//       std::cout << dot(q_bar, p_bar) << std::endl;
-//     }
 
 // Clustering code for SimDex
 //
