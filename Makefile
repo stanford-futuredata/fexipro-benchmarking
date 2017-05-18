@@ -1,5 +1,5 @@
 
-CXX := g++
+CXX := g++-4.8
 
 ifeq ($(DEBUG), 1)
   CXX_FLAGS := -g -O0 -D DEBUG
