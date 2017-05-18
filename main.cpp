@@ -90,24 +90,31 @@ void check_double_hat_equivalency(const vec &q_double_hat,
 
 // Preprocess items matrix (P) according to Algorithm 3 in the FEXIPRO paper
 void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
-                imat &P_hat_floors, mat &P_double_hats, uvec &item_ids,
-                vec &sigma, vec &c, vec &p_norms, vec &p_bar_h_norms,
-                vec &p_double_hat_h_norms, vec &p_prime_squared_norms,
+                imat &P_hat_floors, uvec &item_ids, vec &sigma, vec &c,
+                vec &p_norms, vec &p_bar_h_norms, vec &p_double_hat_h_norms,
                 vec &thresh_prime_offline, vec &thresh_prime_offline_l,
-                double &max_P_bar_l, double &max_P_bar_h) {
+                double &max_P_bar_l, double &max_P_bar_h
+#ifdef DEBUG
+                ,
+                mat &P_double_hats, vec &p_prime_squared_norms
+#endif
+                ) {
 
   P_hat_floors = zeros<imat>(size(P));
-  P_double_hats = zeros(d + 2, P.n_cols);
   p_norms = zeros(P.n_cols);
   vec p_bar_norms = zeros(P.n_cols);
   p_bar_h_norms = zeros(P.n_cols);
   p_double_hat_h_norms = zeros(P.n_cols);
-  p_prime_squared_norms = zeros(P.n_cols);
   thresh_prime_offline = zeros(P.n_cols);
   thresh_prime_offline_l = zeros(P.n_cols);
 
+#ifdef DEBUG
+  P_double_hats = zeros(d + 2, P.n_cols);
+  p_prime_squared_norms = zeros(P.n_cols);
+#endif
+
   // 1) sort item weights by decreasing length
-  for (int i = 0; i < P.n_cols; ++i) {
+  for (uint32_t i = 0; i < P.n_cols; ++i) {
     p_norms(i) = norm(P.unsafe_col(i), 2);
   }
   // sort item norms from highest to lowest, and keep
@@ -137,7 +144,7 @@ void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
   // Compute b, which is needed for p_double_hat
   // b = max(||p||) for p in P_bar
   double b = -DBL_MAX;
-  for (int i = 0; i < P_bar.n_cols; ++i) {
+  for (uint32_t i = 0; i < P_bar.n_cols; ++i) {
     const double p_bar_norm = norm(P_bar.unsafe_col(i), 2);
     if (p_bar_norm > b) {
       b = p_bar_norm;
@@ -152,7 +159,7 @@ void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
   // |p_min| = absolute value of minimum value in P_bar
   const double c_init = std::max(1.0, std::abs(P_bar.min()));
   c = zeros(d);
-  for (int i = 0; i < d; ++i) {
+  for (uint32_t i = 0; i < d; ++i) {
     c(i) = c_init + sigma(i) / sigma(d - 1);
   }
   const vec c_l = c.head(w);
@@ -161,7 +168,7 @@ void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
   max_P_bar_h = abs(P_bar.tail_rows(d - w)).max();
   // should we use P or P_bar? P_bar, since P_bar = V^t, and we want to take
   // advantage of the SVD operation before we do integer pruning
-  for (int i = 0; i < P_bar.n_cols; ++i) {
+  for (uint32_t i = 0; i < P_bar.n_cols; ++i) {
     const vec p_bar = P_bar.unsafe_col(i);
 
     //  1. Compute p_hat_l, p_hat_h, and p_hat_floor **for p_bar**
@@ -190,11 +197,11 @@ void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
     p_prime.tail(d) = p_bar + c;
     double p_prime_squared_norm = norm(p_prime, 2);
     p_prime_squared_norm *= p_prime_squared_norm;
-    p_prime_squared_norms(i) = p_prime_squared_norm;
     p_double_hat(0) = p_prime_squared_norm;
     p_double_hat.tail(d + 1) = p_prime;
-    P_double_hats.unsafe_col(i) = p_double_hat;
 #ifdef DEBUG
+    p_prime_squared_norms(i) = p_prime_squared_norm;
+    P_double_hats.unsafe_col(i) = p_double_hat;
     // p_double_hat should always have nonnegative values
     for (int i = 0; i < d + 2; ++i) {
       assert(p_double_hat(i) >= 0.0);
@@ -217,21 +224,23 @@ void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
 }
 
 // Algorithm 5 from the FEXIPRO paper: implement all types of pruning
-double coordinate_scan(const vec &p, const vec &q, const vec &p_bar,
-                       const vec &q_bar, const ivec &p_hat_l_floor,
-                       const ivec &q_hat_l_floor, const ivec &p_hat_h_floor,
-                       const ivec &q_hat_h_floor, const vec &c, const vec &c_l,
-                       const vec &p_double_hat, const vec &q_double_hat,
-                       const uint32_t w, const uint32_t d, const double thresh,
-                       const double thresh_prime,
-                       const double p_prime_squared_norm, const double q_norm,
-                       const double q_bar_norm, const double p_bar_h_norm,
-                       const double q_bar_h_norm,
-                       const double p_double_hat_h_norm,
-                       const double q_double_hat_h_norm,
-                       const double thresh_prime_offline_l_single,
-                       const double max_P_bar_l, const double max_q_bar_l,
-                       const double max_P_bar_h, const double max_q_bar_h) {
+double coordinate_scan(
+    const vec &p_bar, const vec &q_bar, const ivec &p_hat_l_floor,
+    const ivec &q_hat_l_floor, const ivec &p_hat_h_floor,
+    const ivec &q_hat_h_floor, const vec &c_l, const uint32_t w,
+    const uint32_t d, const double thresh, const double thresh_prime,
+    const double q_bar_norm, const double p_bar_h_norm,
+    const double q_bar_h_norm, const double p_double_hat_h_norm,
+    const double q_double_hat_h_norm,
+    const double thresh_prime_offline_l_single, const double max_P_bar_l,
+    const double max_q_bar_l, const double max_P_bar_h, const double max_q_bar_h
+#ifdef DEBUG
+    ,
+    const vec &p, const vec &q, const vec &c, const vec &p_double_hat,
+    const vec &q_double_hat, const double p_prime_squared_norm,
+    const double q_norm
+#endif
+    ) {
 #ifdef DEBUG
   const double true_v = dot(p, q);
   const bool exit_early = true_v < thresh;
@@ -305,14 +314,17 @@ double coordinate_scan(const vec &p, const vec &q, const vec &p_bar,
 uvec retrieve_top_K(const uint32_t d, const uint32_t w, const uint32_t K,
                     const vec &q, const mat &P, const mat &P_bar, const mat &U,
                     const imat &p_hat_l_floors, const imat &p_hat_h_floors,
-                    const mat &P_double_hats, const uvec &item_ids,
-                    const vec &sigma, const vec &c, const vec &c_l,
-                    const vec &p_norms, const vec &p_bar_h_norms,
-                    const vec &p_double_hat_h_norms,
-                    const vec &p_prime_squared_norms,
+                    const uvec &item_ids, const vec &sigma, const vec &c,
+                    const vec &c_l, const vec &p_norms,
+                    const vec &p_bar_h_norms, const vec &p_double_hat_h_norms,
                     const vec &thresh_prime_offline,
                     const vec &thresh_prime_offline_l, const double max_P_bar_l,
-                    const double max_P_bar_h) {
+                    const double max_P_bar_h
+#ifdef DEBUG
+                    ,
+                    const mat &P_double_hats, const vec &p_prime_squared_norms
+#endif
+                    ) {
 
   uvec top_K_items = zeros<uvec>(K);
 
@@ -415,13 +427,18 @@ uvec retrieve_top_K(const uint32_t d, const uint32_t w, const uint32_t K,
       break;
     }
     const double v = coordinate_scan(
-        p, q, p_bar, q_bar, p_hat_l_floors.unsafe_col(item_ind), q_hat_l_floor,
-        p_hat_h_floors.unsafe_col(item_ind), q_hat_h_floor, c, c_l,
-        P_double_hats.unsafe_col(item_ind), q_double_hat, w, d, thresh,
-        thresh_prime, p_prime_squared_norms(item_ind), q_norm, q_bar_norm,
-        p_bar_h_norms(item_ind), q_bar_h_norm, p_double_hat_h_norms(item_ind),
-        q_double_hat_h_norm, thresh_prime_offline_l(item_ind), max_P_bar_l,
-        max_q_bar_l, max_P_bar_h, max_q_bar_h);
+        p_bar, q_bar, p_hat_l_floors.unsafe_col(item_ind), q_hat_l_floor,
+        p_hat_h_floors.unsafe_col(item_ind), q_hat_h_floor, c_l, w, d, thresh,
+        thresh_prime, q_bar_norm, p_bar_h_norms(item_ind), q_bar_h_norm,
+        p_double_hat_h_norms(item_ind), q_double_hat_h_norm,
+        thresh_prime_offline_l(item_ind), max_P_bar_l, max_q_bar_l, max_P_bar_h,
+        max_q_bar_h
+#ifdef DEBUG
+        ,
+        p, q, c, P_double_hats.unsafe_col(item_ind), q_double_hat,
+        p_prime_squared_norms(item_ind), q_norm
+#endif
+        );
     if (v > thresh) {
       queue.pop();
       queue.push(std::make_pair(v, item_ind));
@@ -434,7 +451,7 @@ uvec retrieve_top_K(const uint32_t d, const uint32_t w, const uint32_t K,
   std::cout << "Full dot products: " << full_dot_products << std::endl;
 #endif
   // 5) Get top K from priority queue
-  for (int i = 0; i < K; i++) {
+  for (uint32_t i = 0; i < K; i++) {
     const std::pair<double, int> pair = queue.top();
     top_K_items(K - i - 1) = item_ids(pair.second);
     queue.pop();
@@ -473,7 +490,6 @@ int main(int argc, const char *argv[]) {
 
   const uint32_t K = args["top-k"].as<uint32_t>();
   const uint32_t num_users = args["num-users"].as<uint32_t>();
-  const uint32_t num_items = args["num-items"].as<uint32_t>();
   const uint32_t num_latent_factors = args["num-latent-factors"].as<uint32_t>();
   omp_set_num_threads(1);  // always set to one thread
 
@@ -485,28 +501,35 @@ int main(int argc, const char *argv[]) {
 
   // Preprocessing return values
   uint32_t w;
-  mat U;              // num_latent_factors x num_latent_factors
-  mat P_bar;          // num_latent_factors x num_items
-  imat P_hat_floors;  // num_latent_factors x num_items
-  mat P_double_hats;
+  mat U;                       // num_latent_factors x num_latent_factors
+  mat P_bar;                   // num_latent_factors x num_items
+  imat P_hat_floors;           // num_latent_factors x num_items
   uvec item_ids;               // num_items x 1
   vec sigma;                   // num_latent_factors x 1
   vec c;                       // num_latent_factors x 1
   vec p_norms;                 // num_items x 1
   vec p_bar_h_norms;           // num_items x 1
   vec p_double_hat_h_norms;    // num_items x 1
-  vec p_prime_squared_norms;   // num_items x 1
   vec thresh_prime_offline;    // num_items x 1
   vec thresh_prime_offline_l;  // num_items x 1
   double max_P_bar_l;
   double max_P_bar_h;
+#ifdef DEBUG
+  mat P_double_hats;
+  vec p_prime_squared_norms;  // num_items x 1
+#endif
 
   // Preprocess
   auto start = Time::now();
   preprocess(num_latent_factors, w, item_weights, U, P_bar, P_hat_floors,
-             P_double_hats, item_ids, sigma, c, p_norms, p_bar_h_norms,
-             p_double_hat_h_norms, p_prime_squared_norms, thresh_prime_offline,
-             thresh_prime_offline_l, max_P_bar_l, max_P_bar_h);
+             item_ids, sigma, c, p_norms, p_bar_h_norms, p_double_hat_h_norms,
+             thresh_prime_offline, thresh_prime_offline_l, max_P_bar_l,
+             max_P_bar_h
+#ifdef DEBUG
+             ,
+             P_double_hats, p_prime_squared_norms
+#endif
+             );
   auto end = Time::now();
 
   fsec preprocess_time_s = end - start;
@@ -519,15 +542,19 @@ int main(int argc, const char *argv[]) {
   mat user_weights = parse_weights_csv(user_weights_file);
   std::cout << "User matrix: " << size(user_weights) << std::endl;
   start = Time::now();
-  for (int i = 0; i < user_weights.n_cols; ++i) {
+  for (uint32_t i = 0; i < num_users; ++i) {
     const vec q = user_weights.unsafe_col(i);
     const uvec top_K_items = retrieve_top_K(
         num_latent_factors, w, K, q, item_weights, P_bar, U,
         P_hat_floors.head_rows(w),
-        P_hat_floors.tail_rows(num_latent_factors - w), P_double_hats, item_ids,
-        sigma, c, c.head(w), p_norms, p_bar_h_norms, p_double_hat_h_norms,
-        p_prime_squared_norms, thresh_prime_offline, thresh_prime_offline_l,
-        max_P_bar_l, max_P_bar_h);
+        P_hat_floors.tail_rows(num_latent_factors - w), item_ids, sigma, c,
+        c.head(w), p_norms, p_bar_h_norms, p_double_hat_h_norms,
+        thresh_prime_offline, thresh_prime_offline_l, max_P_bar_l, max_P_bar_h
+#ifdef DEBUG
+        ,
+        P_double_hats, p_prime_squared_norms
+#endif
+        );
 #ifdef DEBUG
     std::cout << top_K_items(0) << std::endl;
 #endif
@@ -559,17 +586,3 @@ int main(int argc, const char *argv[]) {
   timing_stats_file.close();
   return 0;
 }
-
-// Clustering code for SimDex
-//
-// auto t0 = Time::now();
-// mat means;
-// kmeans(means, user_weights.submat(0, 0, num_latent_factors - 1,
-//                                         int(num_users * sample_ratio)),
-//              num_clusters, static_subset, num_iters, false);
-// auto t1 = Time::now();
-// fsec clustering_time_s = t1 - t0;
-// ms clustering_time_ms = std::chrono::duration_cast<ms>(clustering_time_s);
-// std::cout << "Clustering:" << std::endl;
-// std::cout << clustering_time_s.count() << "s\n";
-// std::cout << clustering_time_ms.count() << "ms\n";

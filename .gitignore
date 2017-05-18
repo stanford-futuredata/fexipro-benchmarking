@@ -1,7 +1,8 @@
 *.swp
 *.o
-tags
-include
+# YouCompleteMe compile config
+.ycm_extra_conf.py
 # Executables
 fexipro
 fexipro_debug
+fexipro_prof
