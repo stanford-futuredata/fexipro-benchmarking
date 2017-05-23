@@ -34,6 +34,7 @@ const int E = 100;
 static uint32_t full_dot_products = 0;
 
 // For debugging purposes in gdb, since we can't use overloaded operators
+#ifdef DEBUG
 void print(const vec &v) { v.print(); }
 void print(const ivec &v) { v.print(); }
 double get_elem(const mat &m, int i, int j) { return m(i, j); }
@@ -41,6 +42,7 @@ double get_elem(const vec &v, int i) { return v(i); }
 int get_elem(const uvec &v, int i) { return v(i); }
 double get_norm(const vec &v) { return norm(v, 2); }
 double get_dot(const vec &u, const vec &v) { return dot(u, v); }
+#endif
 
 mat parse_weights_csv(const std::string filename) {
   std::cout << "Loading " << filename << "...." << std::endl;
@@ -134,6 +136,7 @@ void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
   for (; w < sigma.n_elem; ++w) {
     sum += sigma(w);
     if (sum / total > RHO) {
+      ++w; // include current element
       break;
     }
   }
