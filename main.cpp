@@ -44,14 +44,14 @@ double get_norm(const vec &v) { return norm(v, 2); }
 double get_dot(const vec &u, const vec &v) { return dot(u, v); }
 #endif
 
-mat parse_weights_csv(const std::string filename) {
+mat parse_weights_csv(const std::string filename, const uint32_t scale) {
   std::cout << "Loading " << filename << "...." << std::endl;
   mat weights;
   const bool success = weights.load(filename, csv_ascii);
   if (success) {
     std::cout << filename << " successfully loaded" << std::endl;
   }
-  return weights.t();
+  return weights.t() / scale;
 }
 
 // implements Theorem 2 from FEXIPRO paper: IU(q, p) =
@@ -162,8 +162,19 @@ void preprocess(const uint32_t d, uint32_t &w, mat &P, mat &U, mat &P_bar,
   // |p_min| = absolute value of minimum value in P_bar
   const double c_init = std::max(1.0, std::abs(P_bar.min()));
   c = zeros(d);
+
+  const double threshold = 1e-10;
+  double denom = 0.;
+  for (uint32_t i = d-1; i > 0; --i) {
+    if (sigma(i) < threshold) {
+      continue;
+    }
+    denom = sigma(i);
+    break;
+  }
+
   for (uint32_t i = 0; i < d; ++i) {
-    c(i) = c_init + sigma(i) / sigma(d - 1);
+    c(i) = c_init + sigma(i) / denom;
   }
   const vec c_l = c.head(w);
 
@@ -471,6 +482,7 @@ int main(int argc, const char *argv[]) {
       "Top K items to return per user")(
       "num-users,m", opt::value<uint32_t>()->required(), "Number of users")(
       "num-items,n", opt::value<uint32_t>()->required(), "Number of items")(
+      "scale,s", opt::value<uint32_t>()->default_value(1), "scale weights by fraction")(
       "num-latent-factors,f", opt::value<uint32_t>()->required(),
       "Number of latent factors")("base-name",
                                   opt::value<std::string>()->required(),
@@ -494,12 +506,13 @@ int main(int argc, const char *argv[]) {
   const uint32_t K = args["top-k"].as<uint32_t>();
   const uint32_t num_users = args["num-users"].as<uint32_t>();
   const uint32_t num_latent_factors = args["num-latent-factors"].as<uint32_t>();
+  const uint32_t scale = args["scale"].as<uint32_t>();
   omp_set_num_threads(1);  // always set to one thread
 
   const std::string base_name = args["base-name"].as<std::string>();
 
   // Load item weights
-  mat item_weights = parse_weights_csv(item_weights_file);
+  mat item_weights = parse_weights_csv(item_weights_file, scale);
   std::cout << "Item matrix: " << size(item_weights) << std::endl;
 
   // Preprocessing return values
@@ -542,7 +555,7 @@ int main(int argc, const char *argv[]) {
   std::cout << preprocess_time_ms.count() << "ms\n";
 
   // Load user weights
-  mat user_weights = parse_weights_csv(user_weights_file);
+  mat user_weights = parse_weights_csv(user_weights_file, scale);
   std::cout << "User matrix: " << size(user_weights) << std::endl;
   start = Time::now();
   for (uint32_t i = 0; i < num_users; ++i) {
